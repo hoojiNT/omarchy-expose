@@ -29,8 +29,14 @@ video keeps playing and a terminal keeps scrolling while the overview is open.
   ```bash
   sudo usermod -aG input $USER   # log out and back in
   ```
-- `libinput` and `stdbuf` (coreutils) on `PATH`. Both are already present on a
-  stock Omarchy install.
+- The `libinput` CLI, which ships in **`libinput-tools`** — the library alone is
+  not enough, and a stock Omarchy install does not have the tools package:
+
+  ```bash
+  omarchy pkg add libinput-tools
+  ```
+  `stdbuf` (coreutils) is already there. If either is missing the plugin says so
+  in a notification rather than going quietly deaf.
 
 ## Install
 
@@ -66,8 +72,10 @@ omarchy plugin remove hooji.expose
 | Four fingers left/right, overview open | Walk the selection across the grid |
 | Click a window | Focus it and close |
 | Click the background | Close |
-| `←` `→` / `Tab` | Move the selection |
-| `Enter` | Focus the selected window |
+| `←` `→` / `Tab` / `Shift+Tab` | Move the selection |
+| `↑` `↓` | Move a whole row |
+| `Home` / `End` | First / last window |
+| `Enter` / `Space` | Focus the selected window |
 | `Esc` | Close |
 
 Release matters as much as distance: a quick flick opens or closes even if you
@@ -89,17 +97,66 @@ horizontal swipes while the overview was open. This one owns all four four-finge
 directions and dispatches the workspace switch itself. **Three-finger gestures
 are untouched** and keep doing whatever you have bound them to.
 
-## Tuning
+## Settings
 
-There is no settings UI yet. The knobs are plain properties at the top of the
-source, and saving the file reloads the plugin:
+Settings live in the plugin's own entry in `~/.config/omarchy/shell.json`, which
+hot-reloads on save. [`config.example.json`](config.example.json) is that entry
+with every key at its default — copy the keys you want to change into the entry
+you already have:
 
-| Property | File | Default | What it does |
-|---|---|---|---|
-| `fingers` | `SwipeSource.qml` | `4` | Which swipe to listen for |
-| `threshold` | `SwipeSource.qml` | `220` | Travel, in libinput units, that counts as a full gesture |
-| `axisLockDistance` | `SwipeSource.qml` | `12` | Travel before the axis locks, so a slightly diagonal swipe still reads as vertical |
-| `naturalWorkspaceSwipe` | `Expose.qml` | `true` | Swiping right moves the desktop right; flip it if that feels backwards |
+```json
+{
+  "plugins": [
+    { "id": "hooji.expose", "threshold": 260, "liveThumbnails": false }
+  ]
+}
+```
+
+| Key | Default | What it does |
+|---|---|---|
+| `fingers` | `4` | Which swipe to listen for |
+| `threshold` | `220` | Travel, in libinput units, that counts as a full gesture |
+| `naturalWorkspaceSwipe` | `true` | Swiping right moves the desktop right; flip it if that feels backwards |
+| `liveThumbnails` | `true` | Live capture per window. Turn off first if a crowded workspace ever costs too much |
+| `scrimOpacity` | `0.92` | How far the desktop is dimmed behind the grid |
+
+> The `{ "id": "hooji.expose" }` entry is also what marks the plugin **enabled**.
+> Remove a key you no longer want, never the whole entry.
+
+Or write one without editing the file — this persists through the shell's own
+writer:
+
+```bash
+omarchy-shell expose set threshold 260
+```
+
+Pausing is separate from configuring. It stops the touchpad reader outright
+while leaving the overview one keybinding away, which is what you want for a
+game or a screen share:
+
+```bash
+omarchy toggle expose-gestures-paused    # or: omarchy-shell expose gestures off
+```
+
+## Driving it from a script or an agent
+
+The plugin registers an IPC target, so it can be driven headlessly and, more
+usefully, *inspected* — `status` answers with JSON instead of making the caller
+take a screenshot and guess:
+
+```bash
+omarchy-shell expose status      # opened, progress, monitor, columns, selected,
+                                 # gestures, device, lastError, settings, windows[]
+omarchy-shell expose open        # also: close, toggle
+omarchy-shell expose select 2    # move the selection without acting on it
+omarchy-shell expose activate    # focus whatever is selected
+omarchy-shell expose focus 0     # focus by index
+omarchy-shell expose gestures off
+```
+
+`select` deliberately does not act, so a caller can look before it leaps: select,
+read `status`, then `activate`. Quickshell IPC has no optional arguments, which
+is why `activate` exists next to `focus <index>`.
 
 ## How it works
 

@@ -29,8 +29,14 @@ cuộn khi overview đang mở.
   ```bash
   sudo usermod -aG input $USER   # đăng xuất rồi đăng nhập lại
   ```
-- Có `libinput` và `stdbuf` (coreutils) trong `PATH`. Bản Omarchy nguyên gốc đã
-  có sẵn cả hai.
+- Lệnh `libinput`, nằm trong gói **`libinput-tools`** — chỉ có thư viện là chưa
+  đủ, và bản Omarchy nguyên gốc không cài sẵn gói này:
+
+  ```bash
+  omarchy pkg add libinput-tools
+  ```
+  `stdbuf` (coreutils) thì đã có sẵn. Thiếu cái nào plugin cũng báo bằng
+  notification chứ không im lặng điếc đặc.
 
 ## Cài đặt
 
@@ -65,8 +71,10 @@ omarchy plugin remove hooji.expose
 | Bốn ngón trái/phải, khi overview mở | Di chuyển lựa chọn trong lưới |
 | Bấm vào một cửa sổ | Focus cửa sổ đó và đóng overview |
 | Bấm vào nền | Đóng |
-| `←` `→` / `Tab` | Đổi lựa chọn |
-| `Enter` | Focus cửa sổ đang chọn |
+| `←` `→` / `Tab` / `Shift+Tab` | Đổi lựa chọn |
+| `↑` `↓` | Nhảy nguyên một hàng |
+| `Home` / `End` | Cửa sổ đầu / cuối |
+| `Enter` / `Space` | Focus cửa sổ đang chọn |
 | `Esc` | Đóng |
 
 Cách nhả tay quan trọng ngang quãng đường vuốt: một cú flick nhanh vẫn mở hoặc
@@ -90,15 +98,61 @@ dispatch lệnh chuyển workspace. **Cử chỉ ba ngón không bị đụng t�
 
 ## Tinh chỉnh
 
-Chưa có giao diện cài đặt. Các tham số là property đặt ngay đầu file, và lưu file
-là plugin tự nạp lại:
+Cấu hình nằm trong chính entry của plugin ở `~/.config/omarchy/shell.json`, file
+này tự nạp lại khi lưu. [`config.example.json`](config.example.json) là entry đó
+với mọi key ở giá trị mặc định — chép key nào bạn muốn đổi vào entry sẵn có:
 
-| Property | File | Mặc định | Tác dụng |
-|---|---|---|---|
-| `fingers` | `SwipeSource.qml` | `4` | Lắng nghe cử chỉ mấy ngón |
-| `threshold` | `SwipeSource.qml` | `220` | Quãng đường (đơn vị libinput) tính là một cử chỉ trọn vẹn |
-| `axisLockDistance` | `SwipeSource.qml` | `12` | Quãng đường trước khi khoá trục, để vuốt hơi chéo vẫn tính là dọc |
-| `naturalWorkspaceSwipe` | `Expose.qml` | `true` | Vuốt sang phải thì desktop đi sang phải; đảo lại nếu thấy ngược |
+```json
+{
+  "plugins": [
+    { "id": "hooji.expose", "threshold": 260, "liveThumbnails": false }
+  ]
+}
+```
+
+| Key | Mặc định | Tác dụng |
+|---|---|---|
+| `fingers` | `4` | Lắng nghe cử chỉ mấy ngón |
+| `threshold` | `220` | Quãng đường (đơn vị libinput) tính là một cử chỉ trọn vẹn |
+| `naturalWorkspaceSwipe` | `true` | Vuốt sang phải thì desktop đi sang phải; đảo lại nếu thấy ngược |
+| `liveThumbnails` | `true` | Thumbnail cập nhật sống. Tắt đầu tiên nếu workspace đông cửa sổ thấy nặng |
+| `scrimOpacity` | `0.92` | Nền desktop bị làm mờ tới mức nào sau lưới |
+
+> Entry `{ "id": "hooji.expose" }` cũng chính là thứ đánh dấu plugin **đang bật**.
+> Xoá key không cần nữa thì được, đừng xoá cả entry.
+
+Hoặc ghi mà không cần mở file — đường này persist qua đúng bộ ghi của shell:
+
+```bash
+omarchy-shell expose set threshold 260
+```
+
+Tạm dừng là chuyện khác với cấu hình: nó tắt hẳn tiến trình đọc touchpad nhưng
+vẫn giữ overview cách một phím tắt, hợp lúc chơi game hoặc trình chiếu:
+
+```bash
+omarchy toggle expose-gestures-paused    # hoặc: omarchy-shell expose gestures off
+```
+
+## Điều khiển từ script hoặc AI agent
+
+Plugin đăng ký một IPC target nên có thể điều khiển không cần touchpad, và quan
+trọng hơn là **đọc được trạng thái** — `status` trả JSON thay vì bắt bên gọi
+chụp màn hình rồi đoán:
+
+```bash
+omarchy-shell expose status      # opened, progress, monitor, columns, selected,
+                                 # gestures, device, lastError, settings, windows[]
+omarchy-shell expose open        # và: close, toggle
+omarchy-shell expose select 2    # chỉ dời lựa chọn, chưa hành động
+omarchy-shell expose activate    # focus cửa sổ đang chọn
+omarchy-shell expose focus 0     # focus theo index
+omarchy-shell expose gestures off
+```
+
+`select` cố tình không hành động, để bên gọi nhìn trước khi nhảy: select, đọc
+`status`, rồi `activate`. IPC của Quickshell không có tham số optional, nên mới
+có `activate` bên cạnh `focus <index>`.
 
 ## Nó hoạt động thế nào
 

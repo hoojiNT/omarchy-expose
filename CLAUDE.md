@@ -28,9 +28,21 @@ omarchy-shell shell toggle hooji.expose '{}'
 # Confirm it is discovered and enabled:
 omarchy-shell shell listPlugins
 
+# The plugin's own IPC target — status is JSON, and the fastest way to see
+# what the overlay thinks is on screen without screenshotting it:
+omarchy-shell expose status
+omarchy-shell expose open        # close, toggle, select <i>, activate, focus <i>
+omarchy-shell expose gestures off
+omarchy-shell expose set threshold 260
+
 # Full shell restart (needed only when a reload wedges):
 omarchy-restart-shell
 ```
+
+**`keepLoaded: true` means a file save does not remount the object.** The shell
+logs `Local plugin changed, reloading` and rescans, but the already-mounted item
+keeps running the old code — edits appear to do nothing, including edits meant to
+debug why nothing is happening. Run `omarchy restart shell` after every change.
 
 There is no test suite. Verification is manual: reload, swipe, and read
 `console.warn` output from the shell process (`journalctl --user -f` or the
@@ -38,7 +50,12 @@ terminal that launched `quickshell -p $OMARCHY_PATH/shell`). QML errors from a
 failed plugin load surface as `panel plugin hooji.expose failed to load: …`.
 
 The gesture reader needs the user to be in the `input` group (`groups` should
-list `input`) so it can read `/dev/input/event*`.
+list `input`) so it can read `/dev/input/event*`, and `libinput-tools` installed.
+Both failures now raise `SwipeSource.problem` and surface as one desktop
+notification instead of a lone WARN in the journal.
+
+Keyboard paths can be exercised headlessly with `wtype -k Right` and friends
+while the overlay holds the keyboard.
 
 ## Architecture
 
@@ -122,8 +139,46 @@ workspace swipe cannot be toggled at runtime, so horizontal-while-closed
 dispatches `workspace e+1`/`e-1` itself (see `naturalWorkspaceSwipe`), and
 horizontal-while-open walks the grid selection instead.
 
-Selecting a window dispatches `focuswindow address:0x…` and closes; an empty
-workspace refuses to open at all rather than showing a bare scrim.
+Selecting a window closes the overlay first and dispatches focus 240ms later:
+the panel holds an exclusive keyboard grab while open, and focusing before the
+grab drops lets Hyprland hand focus back to whatever was focused before it,
+silently undoing the pick. An empty workspace refuses to open at all rather than
+showing a bare scrim.
+
+**Dispatch grammar depends on how Hyprland is configured.** Omarchy 4 uses Lua,
+where the classic `focuswindow address:0x…` string is rejected by the Lua
+evaluator (`')' expected near 'address'`) and does nothing — silently, because
+the IPC error never reaches the caller. Everything goes through
+`root.dispatch(luaForm, classicForm)`, which picks the form off
+`Hyprland.usingLua`; the Lua forms are `hl.dsp.focus({ window = "address:0x…" })`
+and `hl.dsp.focus({ workspace = "e+1" })`. The error text from `hl.focus` lists
+the accepted keys, which is the fastest way to find the right shape for a
+dispatcher.
+
+A layer-shell surface can hold the keyboard while nothing inside it has active
+focus, and then every key press is dropped. `keys.forceActiveFocus()` on
+`progress > 0.99` is what makes the key handlers fire at all.
+
+### Settings, IPC, and the pause switch
+
+The shell has **no settings channel for overlays** — `schema`/`defaults` in a
+manifest are read for bar widgets only, and the panel Loader injects nothing of
+the sort. Settings are therefore read straight off the plugin's own entry in
+`shell.json` (`root.settings`, with `setting(key, fallback)` accessors) and
+written back through `shell.updateEntryInline()`, the same writer the shell uses.
+`config.example.json` documents the keys. The entry itself is what marks the
+plugin enabled: drop a key, never the entry.
+
+`IpcHandler { target: "expose" }` exposes `status` (JSON), `open`/`close`/
+`toggle`, `select`, `activate`, `focus`, `gestures`, `set`. Quickshell IPC
+arguments are all required strings, hence `activate()` beside `focus(index)`,
+and `set` parses its value as JSON so numbers and booleans stay typed.
+
+Pausing rides omarchy's own toggle mechanism: `expose-gestures-paused` is a flag
+file under `~/.local/state/omarchy/toggles/` that `omarchy toggle` touches or
+removes. A `FileView` watches the *directory* (so creation is caught, not just
+removal) and a `test -f` Process reads it. Pausing sets `SwipeSource.enabled =
+false`, which stops the libinput process rather than merely ignoring it.
 
 ## Conventions
 
