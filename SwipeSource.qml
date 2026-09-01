@@ -34,8 +34,22 @@ Item {
   signal moved(real dx, real dy, string axis)
   signal ended(real dx, real dy, real vx, real vy, bool cancelled)
 
+  // Turning this off stops the reader outright — no process left running for a
+  // feature the user has paused.
+  property bool enabled: true
+
   property string device: ""
   property string lastError: ""
+  property int failures: 0
+
+  // Raised once the reader looks genuinely broken rather than merely restarting,
+  // so the host can tell the user instead of leaving them swiping at nothing.
+  signal problem(string reason)
+
+  onEnabledChanged: {
+    if (root.enabled) startReader()
+    else if (reader.running) reader.running = false
+  }
 
   QtObject {
     id: swipe
@@ -143,10 +157,14 @@ Item {
       }
     }
     onExited: (code) => {
-      if (!root.device) {
-        root.lastError = "no touchpad found (libinput list-devices exit " + code + ")"
-        console.warn("hooji.expose:", root.lastError)
-      }
+      if (root.device) return
+      // 127 is the shell reporting that libinput itself is not installed —
+      // the one failure a user can fix in a single command.
+      root.lastError = code === 127
+        ? "libinput-tools is not installed (omarchy pkg add libinput-tools)"
+        : "no touchpad found in libinput list-devices"
+      console.warn("hooji.expose:", root.lastError)
+      root.problem(root.lastError)
     }
   }
 
@@ -155,7 +173,7 @@ Item {
   // and libinput is handed an empty --device: it exits 1 with "Failed to
   // initialize device" and the overview is silently deaf to gestures.
   function startReader() {
-    if (root.device === "" || reader.running) return
+    if (!root.enabled || root.device === "" || reader.running) return
     reader.command = ["stdbuf", "-oL", "libinput", "debug-events", "--device", root.device]
     reader.running = true
   }
@@ -174,8 +192,16 @@ Item {
     // If the reader dies (device unplugged, libinput upgraded underneath us)
     // the overview would silently stop responding. Come back after a beat.
     onExited: (code) => {
-      if (code !== 0) console.warn("hooji.expose: libinput reader exited", code, root.lastError)
       root.reset()
+      if (code === 0 || !root.enabled) return
+
+      console.warn("hooji.expose: libinput reader exited", code, root.lastError)
+      root.failures += 1
+      // One exit is a hiccup worth retrying; a reader that cannot stay up is a
+      // broken install, and silence is the worst way to report it.
+      if (root.failures === 3)
+        root.problem(root.lastError !== "" ? root.lastError
+          : "cannot read the touchpad (is the user in the input group?)")
       restart.start()
     }
   }

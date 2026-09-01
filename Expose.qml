@@ -1,6 +1,7 @@
 import QtQuick
 import Quickshell
 import Quickshell.Hyprland
+import Quickshell.Io
 import Quickshell.Wayland
 import qs.Commons
 
@@ -24,6 +25,48 @@ Item {
   property var manifest: null
   property string omarchyPath: ""
 
+  readonly property string pluginId: manifest && manifest.id ? String(manifest.id) : "hooji.expose"
+
+  // ------------------------------------------------------------- settings
+  //
+  // The shell has no settings channel for overlays — `schema`/`defaults` in a
+  // manifest are read for bar widgets only, and the panel Loader injects just
+  // omarchyPath/shell/manifest/registries. So read the plugin's own entry in
+  // shell.json directly; it is the one config file omarchy promises, and it
+  // hot-reloads on save.
+  //
+  //   "plugins": [ { "id": "hooji.expose", "threshold": 260 } ]
+  readonly property var settings: {
+    var config = shell && shell.shellConfig ? shell.shellConfig : null
+    var entries = config && Array.isArray(config.plugins) ? config.plugins : []
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i] && String(entries[i].id) === root.pluginId) return entries[i]
+    }
+    return ({})
+  }
+
+  function setting(key, fallback) {
+    var value = root.settings[key]
+    return value === undefined || value === null ? fallback : value
+  }
+
+  readonly property int gestureFingers: setting("fingers", 4)
+  readonly property real swipeThreshold: setting("threshold", 220)
+  readonly property bool naturalWorkspaceSwipe: setting("naturalWorkspaceSwipe", true)
+  readonly property bool liveThumbnails: setting("liveThumbnails", true)
+  readonly property real scrimOpacity: setting("scrimOpacity", 0.92)
+
+  // Persisted through the shell's own writer, so the entry keeps the shape the
+  // rest of omarchy expects and shell.json is only rewritten when something
+  // actually changed.
+  function updateSetting(key, value) {
+    if (!shell || typeof shell.updateEntryInline !== "function") return false
+    var merged = ({})
+    for (var k in root.settings) if (k !== "id") merged[k] = root.settings[k]
+    merged[key] = value
+    return shell.updateEntryInline(root.pluginId, merged) !== false
+  }
+
   // ------------------------------------------------------------------ state
 
   // 0 = desktop, 1 = full overview. Everything on screen is a function of it.
@@ -38,10 +81,6 @@ Item {
   property var windows: []
   property int selectedIndex: 0
 
-  // Swipe right moves the desktop right, the way content follows fingers on
-  // macOS. Flip this if it feels backwards.
-  property bool naturalWorkspaceSwipe: true
-
   // While the finger is down the overview tracks it exactly; the animation is
   // only for what happens after release.
   Behavior on progress {
@@ -52,6 +91,16 @@ Item {
   // ---------------------------------------------------------------- helpers
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
+
+  // Omarchy v4 configures Hyprland in Lua, and that changes the dispatch
+  // grammar: the classic "focuswindow address:0x..." string is rejected by the
+  // Lua evaluator ("')' expected near 'address'") and does nothing at all —
+  // silently, because the IPC error never reaches the caller. Hyprland reports
+  // which language it is running, so send the matching form and keep working
+  // on a pre-Lua install too.
+  function dispatch(luaForm, classicForm) {
+    Hyprland.dispatch(Hyprland.usingLua ? luaForm : classicForm)
+  }
 
   function monitorOf(name) {
     var monitors = Hyprland.monitors.values
@@ -189,11 +238,8 @@ Item {
     interval: 240
     onTriggered: {
       if (root.pendingAddress === "") return
-      // Omarchy configures Hyprland in Lua, and that changes the dispatch
-      // grammar: the classic "focuswindow address:0x..." string is rejected by
-      // the Lua evaluator ("')' expected near 'address'"), silently doing
-      // nothing. Dispatchers have to be written as Lua expressions.
-      Hyprland.dispatch('hl.dsp.focus({ window = "address:' + root.pendingAddress + '" })')
+      root.dispatch('hl.dsp.focus({ window = "address:' + root.pendingAddress + '" })',
+                    "focuswindow address:" + root.pendingAddress)
       root.pendingAddress = ""
     }
   }
@@ -235,7 +281,8 @@ Item {
   }
 
   function switchWorkspace(direction) {
-    Hyprland.dispatch('hl.dsp.focus({ workspace = "' + (direction > 0 ? "e+1" : "e-1") + '" })')
+    var workspace = direction > 0 ? "e+1" : "e-1"
+    root.dispatch('hl.dsp.focus({ workspace = "' + workspace + '" })', "workspace " + workspace)
   }
 
   // ------------------------------------------------------- shell contract
@@ -251,10 +298,170 @@ Item {
     hide()
   }
 
+  // ------------------------------------------------- pause switch (toggle)
+  //
+  // A kill switch that does not mean uninstalling: the overview stays one key
+  // or IPC call away while the touchpad reader is off, which is what you want
+  // for a game or a screen share. It rides omarchy's own toggle mechanism —
+  // `omarchy toggle expose-gestures-paused` just touches or removes this file —
+  // so the CLI, the menu and this plugin all read one source of truth.
+  readonly property string togglesDir: Quickshell.env("HOME") + "/.local/state/omarchy/toggles"
+  readonly property string pauseFlag: "expose-gestures-paused"
+  property bool gesturesPaused: false
+  readonly property bool gesturesEnabled: !gesturesPaused
+
+  function refreshPauseFlag() {
+    if (!pauseCheck.running) pauseCheck.running = true
+  }
+
+  function setGestures(state) {
+    var action = state === "on" ? "off" : (state === "off" ? "on" : "toggle")
+    pauseToggle.command = ["omarchy-toggle", root.pauseFlag, action]
+    pauseToggle.running = true
+    return "ok"
+  }
+
+  Process {
+    id: pauseCheck
+    command: ["test", "-f", root.togglesDir + "/" + root.pauseFlag]
+    onExited: (code) => root.gesturesPaused = (code === 0)
+  }
+
+  Process {
+    id: pauseToggle
+    onExited: root.refreshPauseFlag()
+  }
+
+  // Watching the directory rather than the flag catches the file being created
+  // as well as removed.
+  FileView {
+    path: root.togglesDir
+    watchChanges: true
+    printErrors: false
+    onFileChanged: root.refreshPauseFlag()
+  }
+
+  Component.onCompleted: refreshPauseFlag()
+
+  // A failure here is invisible by nature — no gesture ever arrives, and the
+  // only trace is a line in the journal. Say it out loud, once.
+  property bool problemReported: false
+
+  function reportProblem(reason) {
+    if (root.problemReported) return
+    root.problemReported = true
+    notify.command = ["omarchy-notification-send", "-u", "critical",
+      "Expose: gestures are not working", reason]
+    notify.running = true
+  }
+
+  Process { id: notify }
+
+  // ------------------------------------------------------------------- IPC
+  //
+  // `omarchy-shell shell call hooji.expose <method> <arg>` can already reach
+  // any method here, but it is undiscoverable and takes one string. A named
+  // target gives the CLI — and an agent driving this headless — a surface it
+  // can read: `omarchy-shell expose status` answers with JSON instead of
+  // making the caller take a screenshot and guess.
+  IpcHandler {
+    target: "expose"
+
+    function open(): void { root.open("") }
+    function close(): void { root.close() }
+    function toggle(): void { root.opened ? root.close() : root.open("") }
+    function status(): string { return root.statusJson() }
+
+    // Move the selection without acting on it, so a caller can look before it
+    // leaps: select, read status, then focus.
+    function select(index: string): string {
+      if (root.windows.length === 0) return "empty"
+      var i = parseInt(index)
+      if (isNaN(i)) return "usage: select <index>"
+      root.selectedIndex = root.clamp(i, 0, root.windows.length - 1)
+      return String(root.selectedIndex)
+    }
+
+    // IPC methods take their arguments positionally and none of them are
+    // optional, so "focus what is selected" needs its own zero-argument door.
+    function activate(): string { return pick(root.selectedIndex) }
+
+    function focus(index: string): string {
+      var i = parseInt(index)
+      return isNaN(i) ? "usage: focus <index>" : pick(i)
+    }
+
+    function pick(i) {
+      if (root.windows.length === 0) return "empty"
+      if (i < 0 || i >= root.windows.length) return "no such window"
+      var picked = root.windows[i].title
+      root.focusWindow(i)
+      return picked
+    }
+
+    // on | off | toggle — the same flag `omarchy toggle expose-gestures-paused`
+    // writes, so both routes agree.
+    function gestures(state: string): string {
+      if (["on", "off", "toggle", ""].indexOf(String(state)) === -1)
+        return "usage: gestures <on|off|toggle>"
+      return root.setGestures(String(state) === "" ? "toggle" : String(state))
+    }
+
+    // Persist one setting into this plugin's shell.json entry. Values are read
+    // as JSON so numbers and booleans stay typed: set threshold 260.
+    function set(key: string, value: string): string {
+      if (!key) return "usage: set <key> <value>"
+      var parsed = value
+      try { parsed = JSON.parse(value) } catch (e) { parsed = value }
+      return root.updateSetting(key, parsed) ? "ok" : "failed"
+    }
+  }
+
+  function statusJson() {
+    var list = []
+    for (var i = 0; i < root.windows.length; i++) {
+      var win = root.windows[i]
+      list.push({
+        index: i,
+        address: win.address,
+        title: win.title,
+        selected: i === root.selectedIndex,
+        at: [win.x, win.y],
+        size: [win.w, win.h]
+      })
+    }
+
+    return JSON.stringify({
+      opened: root.opened,
+      progress: Math.round(root.progress * 100) / 100,
+      dragging: root.dragging,
+      monitor: root.targetMonitor,
+      columns: root.columns,
+      selected: root.selectedIndex,
+      gestures: root.gesturesEnabled ? "on" : "off",
+      device: swipe.device,
+      lastError: swipe.lastError,
+      settings: {
+        fingers: root.gestureFingers,
+        threshold: root.swipeThreshold,
+        naturalWorkspaceSwipe: root.naturalWorkspaceSwipe,
+        liveThumbnails: root.liveThumbnails,
+        scrimOpacity: root.scrimOpacity
+      },
+      windows: list
+    })
+  }
+
   // ---------------------------------------------------------- the gesture
 
   SwipeSource {
     id: swipe
+
+    fingers: root.gestureFingers
+    threshold: root.swipeThreshold
+    enabled: root.gesturesEnabled
+
+    onProblem: (reason) => root.reportProblem(reason)
 
     property real startProgress: 0
     property int startSelection: 0
@@ -331,7 +538,7 @@ Item {
       Rectangle {
         anchors.fill: parent
         color: Color.background
-        opacity: root.progress * 0.92
+        opacity: root.progress * root.scrimOpacity
       }
 
       MouseArea {
@@ -407,9 +614,9 @@ Item {
               anchors.fill: parent
               captureSource: thumb.modelData.toplevel ? thumb.modelData.toplevel.wayland : null
               // Live frames are what make it feel like the desktop rather than
-              // a screenshot of it. If this ever costs too much with many
-              // windows open, bind it to `root.progress > 0.99`.
-              live: true
+              // a screenshot of it — and the one knob worth turning off first
+              // if a workspace full of windows ever costs too much.
+              live: root.liveThumbnails
             }
 
             Rectangle {
