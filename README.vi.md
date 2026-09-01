@@ -8,6 +8,8 @@ xong.
 
 *[English](README.md)*
 
+![Vuốt bốn ngón trải mọi cửa sổ của workspace hiện tại thành lưới](preview.png)
+
 ## Không cửa sổ nào bị di chuyển
 
 Cửa sổ giữ nguyên vị trí và kích thước thật trong suốt cử chỉ. Thứ bay vào lưới

@@ -8,6 +8,8 @@ after the gesture ends.
 
 *[Tiếng Việt](README.vi.md)*
 
+![Four-finger swipe lays the current workspace out in a grid](preview.png)
+
 ## Nothing is ever moved
 
 The windows keep their real position and size for the entire gesture. What flies
