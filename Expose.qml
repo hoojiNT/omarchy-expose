@@ -103,25 +103,20 @@ Item {
     }
   }
 
-  // Where window `index` sits when the overview is fully open, inside a panel
-  // of the given size. A plain grid for now; the cell keeps the window's
-  // aspect ratio so nothing is stretched.
-  function slot(index, count, panelWidth, panelHeight, win) {
-    var margin = 48
-    var gap = 24
-    // The panel reports 0x0 for a frame before layer-shell hands it a size.
-    if (panelWidth <= 0 || panelHeight <= 0) return { x: win.x, y: win.y, w: win.w, h: win.h }
+  readonly property int gridMargin: 48
+  readonly property int gridGap: 24
 
-    // sqrt(count) columns is the obvious choice and the wrong one on a wide
-    // screen: three windows land in a 2x2 with a hole, at half the size a 3x1
-    // would have given them. Try every column count, keep the roomiest — and
-    // score it on the whole set, so every window agrees on the same grid.
+  // sqrt(count) columns is the obvious choice and the wrong one on a wide
+  // screen: three windows land in a 2x2 with a hole, at half the size a 3x1
+  // would have given them. Try every column count, keep the roomiest — and
+  // score it on the whole set, so every window agrees on one grid.
+  function chooseColumns(count, panelWidth, panelHeight) {
     var columns = 1
     var best = -1
     for (var c = 1; c <= count; c++) {
       var candidateRows = Math.ceil(count / c)
-      var candidateW = (panelWidth - 2 * margin - (c - 1) * gap) / c
-      var candidateH = (panelHeight - 2 * margin - (candidateRows - 1) * gap) / candidateRows
+      var candidateW = (panelWidth - 2 * gridMargin - (c - 1) * gridGap) / c
+      var candidateH = (panelHeight - 2 * gridMargin - (candidateRows - 1) * gridGap) / candidateRows
       if (candidateW <= 0 || candidateH <= 0) continue
       var worst = 1
       for (var i = 0; i < root.windows.length; i++) {
@@ -130,6 +125,28 @@ Item {
       }
       if (worst > best) { best = worst; columns = c }
     }
+    return columns
+  }
+
+  // Arrow keys need the same grid the thumbnails are laid out on, and they are
+  // handled outside any one panel — so derive it from the monitor rather than
+  // from a panel's width.
+  readonly property int columns: {
+    var monitor = monitorOf(root.targetMonitor)
+    if (!monitor || root.windows.length === 0) return 1
+    return chooseColumns(root.windows.length, monitor.width / monitor.scale, monitor.height / monitor.scale)
+  }
+
+  // Where window `index` sits when the overview is fully open, inside a panel
+  // of the given size. A plain grid for now; the cell keeps the window's
+  // aspect ratio so nothing is stretched.
+  function slot(index, count, panelWidth, panelHeight, win) {
+    var margin = gridMargin
+    var gap = gridGap
+    // The panel reports 0x0 for a frame before layer-shell hands it a size.
+    if (panelWidth <= 0 || panelHeight <= 0) return { x: win.x, y: win.y, w: win.w, h: win.h }
+
+    var columns = chooseColumns(count, panelWidth, panelHeight)
     var rows = Math.ceil(count / columns)
 
     var cellW = (panelWidth - 2 * margin - (columns - 1) * gap) / columns
@@ -179,6 +196,30 @@ Item {
       Hyprland.dispatch('hl.dsp.focus({ window = "address:' + root.pendingAddress + '" })')
       root.pendingAddress = ""
     }
+  }
+
+  // Grid-aware navigation. Horizontal is a plain step; vertical jumps a whole
+  // row. The last row is usually ragged, so Down from a full row lands on the
+  // final window instead of refusing to move — which is what the eye expects
+  // when there is clearly something below and to the left.
+  function moveSelection(dx, dy) {
+    var last = root.windows.length - 1
+    if (last < 0) return
+
+    var index = root.selectedIndex
+    if (dx !== 0) {
+      root.selectedIndex = clamp(index + dx, 0, last)
+      return
+    }
+
+    var target = index + dy * root.columns
+    if (target >= 0 && target <= last) {
+      root.selectedIndex = target
+      return
+    }
+
+    var rows = Math.ceil(root.windows.length / root.columns)
+    if (dy > 0 && Math.floor(index / root.columns) < rows - 1) root.selectedIndex = last
   }
 
   function reveal() {
@@ -318,10 +359,22 @@ Item {
         Keys.onPressed: (event) => {
           if (event.key === Qt.Key_Escape) { root.hide(); event.accepted = true }
           else if (event.key === Qt.Key_Right || event.key === Qt.Key_Tab) {
-            root.selectedIndex = root.clamp(root.selectedIndex + 1, 0, root.windows.length - 1)
+            root.moveSelection(1, 0)
             event.accepted = true
-          } else if (event.key === Qt.Key_Left) {
-            root.selectedIndex = root.clamp(root.selectedIndex - 1, 0, root.windows.length - 1)
+          } else if (event.key === Qt.Key_Left || event.key === Qt.Key_Backtab) {
+            root.moveSelection(-1, 0)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Down) {
+            root.moveSelection(0, 1)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Up) {
+            root.moveSelection(0, -1)
+            event.accepted = true
+          } else if (event.key === Qt.Key_Home) {
+            root.selectedIndex = 0
+            event.accepted = true
+          } else if (event.key === Qt.Key_End) {
+            root.selectedIndex = Math.max(0, root.windows.length - 1)
             event.accepted = true
           } else if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter
                      || event.key === Qt.Key_Space) {
