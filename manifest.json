@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "hooji.expose",
+  "name": "Expose",
+  "version": "0.1.0",
+  "author": "hooji",
+  "description": "Mission Control cho Hyprland: vuốt 4 ngón lên để trải mọi cửa sổ của workspace hiện tại",
+  "kinds": [
+    "overlay"
+  ],
+  "keepLoaded": true,
+  "entryPoints": {
+    "overlay": "Expose.qml"
+  }
+}
